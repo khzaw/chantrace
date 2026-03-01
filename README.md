@@ -55,12 +55,12 @@ func main() {
 }
 ```
 
-Or skip the code changes and enable via environment variable:
+Or enable via environment variable:
 
 ```bash
-CHANTRACE=1 go run .       # log to stderr
-CHANTRACE=tui go run .     # terminal dashboard
-CHANTRACE=web go run .     # web dashboard
+CHANTRACE=1 go run .       # built-in log stream to stderr
+CHANTRACE=tui go run .     # requires blank import: backend/tui
+CHANTRACE=web go run .     # requires blank import: backend/web
 ```
 
 ## API
@@ -130,14 +130,25 @@ chantrace.Select(
 ### Configuration
 
 ```go
+import (
+    _ "github.com/khzaw/chantrace/backend/tui"
+    _ "github.com/khzaw/chantrace/backend/web"
+)
+
 chantrace.Enable(
     chantrace.WithLogStream(),         // colored stderr output (default)
+    chantrace.WithTUI(),               // terminal sink (requires backend/tui import)
+    chantrace.WithWeb(":4884"),        // web sink (requires backend/web import)
     chantrace.WithBufferSize(32768),   // async dispatch buffer size
     chantrace.WithValueSnapshot(false),// skip fmt.Sprintf on values
+    chantrace.WithPCCapture(false),    // disable PC capture for lower overhead
+    chantrace.WithPCSampleEvery(4),    // capture 1 out of 4 PCs
     chantrace.WithBackend(myBackend),  // custom backend
 )
 defer chantrace.Shutdown()
 ```
+
+If `WithTUI` or `WithWeb` are used without their backend package imports, chantrace falls back to `WithLogStream`.
 
 ### Inspection
 
