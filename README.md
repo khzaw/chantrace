@@ -234,7 +234,13 @@ Use rewrite assist to print migration hints with suggested wrappers:
 go run ./cmd/chantrace-rewrite-assist ./...
 ```
 
-Both tools are additive. `chantracecheck` is CI-friendly (non-zero diagnostics), while rewrite assist is a migration helper for local planning.
+Use auto-fix mode to rewrite common channel ops directly in source:
+
+```bash
+go run ./cmd/chantrace-fix -w ./...
+```
+
+`chantracecheck` is CI-friendly (non-zero diagnostics), rewrite assist is useful for planning, and `chantrace-fix` applies safe automatic rewrites for send/recv/range patterns.
 
 ## Detecting Blocked Operations
 
