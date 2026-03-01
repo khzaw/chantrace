@@ -133,3 +133,82 @@ func TestAnalyzerTraceLostInvalidatesInflightState(t *testing.T) {
 		t.Fatalf("blocked count = %d, want 0 after TraceLost invalidation", len(report.Blocked))
 	}
 }
+
+func TestAnalyzerReportChannelWaitsAndGraph(t *testing.T) {
+	analyzer := NewAnalyzer(WithAnalyzerBlockedThreshold(0))
+	now := time.Now().Add(-time.Second).UnixNano()
+
+	analyzer.HandleEvent(Event{
+		Kind:        ChanSendStart,
+		OpID:        1,
+		Timestamp:   now,
+		GoroutineID: 10,
+		ChannelID:   100,
+		ChannelName: "jobs",
+		ValueType:   "int",
+	})
+	analyzer.HandleEvent(Event{
+		Kind:        ChanRecvStart,
+		OpID:        2,
+		Timestamp:   now,
+		GoroutineID: 11,
+		ChannelID:   100,
+		ChannelName: "jobs",
+		ValueType:   "int",
+	})
+	analyzer.HandleEvent(Event{
+		Kind:        ChanRangeStart,
+		OpID:        3,
+		Timestamp:   now,
+		GoroutineID: 12,
+		ChannelID:   100,
+		ChannelName: "jobs",
+		ValueType:   "int",
+	})
+
+	report := analyzer.Report()
+	if len(report.ChannelWaits) != 1 {
+		t.Fatalf("channel_waits count = %d, want 1", len(report.ChannelWaits))
+	}
+	wait := report.ChannelWaits[0]
+	if wait.ChannelID != 100 {
+		t.Fatalf("channel_waits[0].ChannelID = %d, want 100", wait.ChannelID)
+	}
+	if len(wait.Senders) != 1 || wait.Senders[0] != 10 {
+		t.Fatalf("senders = %v, want [10]", wait.Senders)
+	}
+	if len(wait.Receivers) != 1 || wait.Receivers[0] != 11 {
+		t.Fatalf("receivers = %v, want [11]", wait.Receivers)
+	}
+	if len(wait.Rangers) != 1 || wait.Rangers[0] != 12 {
+		t.Fatalf("rangers = %v, want [12]", wait.Rangers)
+	}
+
+	if len(report.WaitGraph.Nodes) != 4 {
+		t.Fatalf("wait graph node count = %d, want 4", len(report.WaitGraph.Nodes))
+	}
+	if !hasGraphEdge(report.WaitGraph.Edges, "g:10", "ch:100", "wait-send") {
+		t.Fatal("missing wait-send edge g:10 -> ch:100")
+	}
+	if !hasGraphEdge(report.WaitGraph.Edges, "g:11", "ch:100", "wait-recv") {
+		t.Fatal("missing wait-recv edge g:11 -> ch:100")
+	}
+	if !hasGraphEdge(report.WaitGraph.Edges, "g:12", "ch:100", "wait-range") {
+		t.Fatal("missing wait-range edge g:12 -> ch:100")
+	}
+	if !hasGraphEdge(report.WaitGraph.Edges, "ch:100", "g:11", "potential-recv-counterpart") {
+		t.Fatal("missing counterpart edge ch:100 -> g:11")
+	}
+	if !hasGraphEdge(report.WaitGraph.Edges, "ch:100", "g:10", "potential-send-counterpart") {
+		t.Fatal("missing counterpart edge ch:100 -> g:10")
+	}
+}
+
+func hasGraphEdge(edges []WaitGraphEdge, from, to, relation string) bool {
+	for _, e := range edges {
+		if e.FromID == from && e.ToID == to && e.Relation == relation {
+			return true
+		}
+	}
+	return false
+}
