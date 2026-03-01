@@ -120,3 +120,28 @@ func TestGoID(t *testing.T) {
 		t.Errorf("GoID inside Go() = %d, want > 0", childID)
 	}
 }
+
+func TestGoPCCaptureDisabled(t *testing.T) {
+	rec := &recordingBackend{}
+	Enable(
+		WithBackend(rec),
+		WithPCCapture(false),
+	)
+	t.Cleanup(Shutdown)
+
+	done := make(chan struct{})
+	Go(context.Background(), "no-pc-go", func(_ context.Context) {
+		close(done)
+	})
+	<-done
+
+	events := waitForEvents(rec, 2, time.Second)
+	for _, e := range events {
+		if e.Kind != GoSpawn && e.Kind != GoExit {
+			continue
+		}
+		if e.PC != 0 {
+			t.Fatalf("%s had PC=%d, want 0 when pc capture disabled", e.Kind, e.PC)
+		}
+	}
+}

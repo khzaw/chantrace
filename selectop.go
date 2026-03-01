@@ -91,7 +91,7 @@ func Select(cases ...SelectCase) {
 	var opID uint64
 	var gid int64
 	if tracing {
-		pc = capturePC()
+		pc = maybeCapturePC()
 		opID = nextOpID()
 		gid = currentRuntimeGID()
 		defaultCollector.emit(Event{

@@ -241,3 +241,26 @@ func TestSelectRecvOKClosedChannel(t *testing.T) {
 	}
 	t.Fatal("missing ChanSelectDone event")
 }
+
+func TestSelectPCCaptureDisabled(t *testing.T) {
+	rec := &recordingBackend{}
+	Enable(
+		WithBackend(rec),
+		WithPCCapture(false),
+	)
+	t.Cleanup(Shutdown)
+
+	ch := Make[int]("select-no-pc", 1)
+	Send(ch, 3)
+	Select(OnRecv(ch, func(int) {}))
+
+	events := waitForEvents(rec, 5, time.Second)
+	for _, e := range events {
+		if e.Kind != ChanSelectStart && e.Kind != ChanSelectDone {
+			continue
+		}
+		if e.PC != 0 {
+			t.Fatalf("%s had PC=%d, want 0 when pc capture disabled", e.Kind, e.PC)
+		}
+	}
+}

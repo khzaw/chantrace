@@ -20,6 +20,23 @@ func capturePC() uintptr {
 	return pcs[0]
 }
 
+// maybeCapturePC returns the caller PC if PC capture is enabled and selected by
+// sampling policy; otherwise it returns 0.
+func maybeCapturePC() uintptr {
+	if !pcCapture.Load() {
+		return 0
+	}
+	every := pcSampleEvery.Load()
+	if every <= 1 {
+		return capturePC()
+	}
+	seq := pcSampleSeq.Add(1)
+	if (seq-1)%uint64(every) != 0 {
+		return 0
+	}
+	return capturePC()
+}
+
 // resolvePC converts a raw PC to file:line. Called on the cold path
 // (drain goroutine or snapshot retrieval), not on the hot emit path.
 func resolvePC(pc uintptr) (string, int) {
@@ -93,7 +110,7 @@ func Make[T any](name string, size ...int) chan T {
 			ChannelName: name,
 			ValueType:   elemType,
 			BufCap:      c,
-			PC:          capturePC(),
+			PC:          maybeCapturePC(),
 		})
 	}
 	return ch
@@ -115,7 +132,7 @@ func Register[T any](ch chan T, name string) {
 			ValueType:   elemType,
 			BufCap:      cap(ch),
 			BufLen:      len(ch),
-			PC:          capturePC(),
+			PC:          maybeCapturePC(),
 		})
 	}
 }
@@ -129,7 +146,7 @@ func Send[T any](ch chan<- T, val T) {
 	}
 
 	ptr, name, valType := chanInfo[T](ch)
-	pc := capturePC()
+	pc := maybeCapturePC()
 	opID := nextOpID()
 	gid := currentRuntimeGID()
 
@@ -168,7 +185,7 @@ func Recv[T any](ch <-chan T) T {
 	}
 
 	ptr, name, valType := chanInfo[T](ch)
-	pc := capturePC()
+	pc := maybeCapturePC()
 	opID := nextOpID()
 	gid := currentRuntimeGID()
 
@@ -210,7 +227,7 @@ func RecvOk[T any](ch <-chan T) (T, bool) {
 	}
 
 	ptr, name, valType := chanInfo[T](ch)
-	pc := capturePC()
+	pc := maybeCapturePC()
 	opID := nextOpID()
 	gid := currentRuntimeGID()
 
@@ -254,7 +271,7 @@ func Close[T any](ch chan T) {
 	bufCap := cap(ch)
 	if tracing {
 		gid = currentRuntimeGID()
-		pc = capturePC()
+		pc = maybeCapturePC()
 	}
 
 	close(ch)
@@ -278,7 +295,7 @@ func Close[T any](ch chan T) {
 // Range returns an iter.Seq that performs traced receives over the channel.
 func Range[T any](ch <-chan T) iter.Seq[T] {
 	ptr, name, valType := chanInfo[T](ch)
-	pc := capturePC()
+	pc := maybeCapturePC()
 
 	return func(yield func(T) bool) {
 		gid := currentRuntimeGID()

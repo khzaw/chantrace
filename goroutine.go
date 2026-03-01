@@ -19,7 +19,7 @@ func Go(ctx context.Context, label string, fn func(ctx context.Context)) {
 	if parentGID == 0 {
 		parentGID = GoID(ctx)
 	}
-	pc := capturePC()
+	pc := maybeCapturePC()
 	childTraceID := nextGoroutineID()
 	childCtx := context.WithValue(ctx, goidKey, childTraceID)
 

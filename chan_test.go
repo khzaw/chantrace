@@ -505,6 +505,84 @@ func TestDisabledTracing(t *testing.T) {
 	}
 }
 
+func TestDisablePCCapture(t *testing.T) {
+	rec := &recordingBackend{}
+	Enable(
+		WithBackend(rec),
+		WithPCCapture(false),
+	)
+	t.Cleanup(Shutdown)
+
+	ch := Make[int]("no-pc", 1)
+	Send(ch, 5)
+	Recv[int](ch)
+
+	events := waitForEvents(rec, 5, time.Second)
+	if len(events) < 5 {
+		t.Fatalf("expected at least 5 events, got %d", len(events))
+	}
+
+	for _, e := range events {
+		if e.ChannelName != "no-pc" {
+			continue
+		}
+		if e.PC != 0 {
+			t.Fatalf("event %s had PC=%d, want 0 when pc capture disabled", e.Kind, e.PC)
+		}
+		if e.File != "" || e.Line != 0 {
+			t.Fatalf("event %s resolved file/line unexpectedly: %q:%d", e.Kind, e.File, e.Line)
+		}
+	}
+}
+
+func TestPCSampleEveryTwo(t *testing.T) {
+	rec := &recordingBackend{}
+	Enable(
+		WithBackend(rec),
+		WithPCSampleEvery(2),
+	)
+	t.Cleanup(Shutdown)
+
+	ch := Make[int]("pc-sample-2", 1)
+	Send(ch, 1)
+	Recv[int](ch)
+
+	events := waitForEvents(rec, 5, time.Second)
+
+	var makeEvent, sendStart, sendDone, recvStart, recvDone *Event
+	for i, e := range events {
+		if e.ChannelName != "pc-sample-2" {
+			continue
+		}
+		switch e.Kind {
+		case ChanMake:
+			makeEvent = &events[i]
+		case ChanSendStart:
+			sendStart = &events[i]
+		case ChanSendDone:
+			sendDone = &events[i]
+		case ChanRecvStart:
+			recvStart = &events[i]
+		case ChanRecvDone:
+			recvDone = &events[i]
+		}
+	}
+
+	if makeEvent == nil || sendStart == nil || sendDone == nil || recvStart == nil || recvDone == nil {
+		t.Fatalf("missing expected events for channel %q", "pc-sample-2")
+	}
+
+	if makeEvent.PC == 0 {
+		t.Fatal("make event should capture PC with sample every 2")
+	}
+	if sendStart.PC != 0 || sendDone.PC != 0 {
+		t.Fatalf("send events should be unsampled with sample every 2: start=%d done=%d", sendStart.PC, sendDone.PC)
+	}
+	if recvStart.PC == 0 || recvDone.PC == 0 {
+		t.Fatalf("recv events should capture sampled PC with sample every 2: start=%d done=%d", recvStart.PC, recvDone.PC)
+	}
+}
+
 func TestBlockedDetection(t *testing.T) {
 	rec := setupTracing(t)
 

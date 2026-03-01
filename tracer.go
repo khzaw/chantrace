@@ -10,10 +10,15 @@ import (
 var (
 	enabled        atomic.Bool
 	snapshotValues atomic.Bool
+	pcCapture      atomic.Bool
+	pcSampleEvery  atomic.Uint32
+	pcSampleSeq    atomic.Uint64
 	shutdownMu     sync.Mutex
 )
 
 func init() {
+	pcCapture.Store(true)
+	pcSampleEvery.Store(1)
 	if mode := os.Getenv("CHANTRACE"); mode != "" {
 		autoEnable(mode)
 	}
@@ -34,9 +39,11 @@ func autoEnable(mode string) {
 type Option func(*traceConfig)
 
 type traceConfig struct {
-	backends   []Backend
-	bufSize    int
-	snapValues *bool
+	backends      []Backend
+	bufSize       int
+	snapValues    *bool
+	pcCapture     *bool
+	pcSampleEvery *uint32
 }
 
 // WithLogStream enables colored log output to stderr.
@@ -98,6 +105,23 @@ func WithValueSnapshot(on bool) Option {
 	}
 }
 
+// WithPCCapture controls whether program counters are captured for events.
+// Default is true. Disable in high-throughput paths to avoid runtime.Callers
+// overhead.
+func WithPCCapture(on bool) Option {
+	return func(c *traceConfig) {
+		c.pcCapture = &on
+	}
+}
+
+// WithPCSampleEvery captures PCs for one out of every n traced operations.
+// Default is 1 (capture every operation). Values <= 1 disable sampling.
+func WithPCSampleEvery(n uint32) Option {
+	return func(c *traceConfig) {
+		c.pcSampleEvery = &n
+	}
+}
+
 // backendFactories allows sub-packages to register backend constructors.
 var backendFactories sync.Map // string → factory function
 
@@ -135,6 +159,17 @@ func Enable(opts ...Option) {
 	} else {
 		snapshotValues.Store(true) // default: capture values
 	}
+	if cfg.pcCapture != nil {
+		pcCapture.Store(*cfg.pcCapture)
+	} else {
+		pcCapture.Store(true)
+	}
+	if cfg.pcSampleEvery != nil && *cfg.pcSampleEvery > 1 {
+		pcSampleEvery.Store(*cfg.pcSampleEvery)
+	} else {
+		pcSampleEvery.Store(1)
+	}
+	pcSampleSeq.Store(0)
 	defaultCollector.replaceBackends(cfg.backends)
 	defaultCollector.start()
 	enabled.Store(true)
