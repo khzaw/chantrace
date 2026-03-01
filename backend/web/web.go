@@ -14,7 +14,9 @@ const maxBufferedEvents = 2048
 
 type backend struct {
 	mu     sync.Mutex
-	events []chantrace.Event
+	events [maxBufferedEvents]chantrace.Event
+	head   int
+	count  int
 	srv    *http.Server
 }
 
@@ -43,11 +45,12 @@ func newBackend(addr string) chantrace.Backend {
 
 func (b *backend) HandleEvent(e chantrace.Event) {
 	b.mu.Lock()
-	if len(b.events) >= maxBufferedEvents {
-		copy(b.events, b.events[1:])
-		b.events[len(b.events)-1] = e
+	idx := (b.head + b.count) % maxBufferedEvents
+	b.events[idx] = e
+	if b.count < maxBufferedEvents {
+		b.count++
 	} else {
-		b.events = append(b.events, e)
+		b.head = (b.head + 1) % maxBufferedEvents
 	}
 	b.mu.Unlock()
 }
@@ -75,8 +78,10 @@ func (b *backend) handleIndex(w http.ResponseWriter, _ *http.Request) {
 
 func (b *backend) handleEvents(w http.ResponseWriter, _ *http.Request) {
 	b.mu.Lock()
-	events := make([]chantrace.Event, len(b.events))
-	copy(events, b.events)
+	events := make([]chantrace.Event, b.count)
+	for i := range b.count {
+		events[i] = b.events[(b.head+i)%maxBufferedEvents]
+	}
 	b.mu.Unlock()
 
 	data, err := json.Marshal(events)

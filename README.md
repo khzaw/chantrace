@@ -7,7 +7,7 @@ Channels stay as plain `chan T`. Traced operations are free functions that wrap 
 ```go
 orders := chantrace.Make[Order]("orders", 10) // traced chan Order
 chantrace.Send(orders, Order{ID: 1})          // traced send
-order := chantrace.Recv(orders)                // traced receive
+order := chantrace.Recv[Order](orders)          // traced receive
 orders <- Order{ID: 2}                         // still works, just untraced
 ```
 
@@ -25,7 +25,7 @@ orders <- Order{ID: 2}                         // still works, just untraced
 go get github.com/khzaw/chantrace@latest
 ```
 
-Requires Go 1.24+.
+Requires Go 1.25+.
 
 ## Quick Start
 
@@ -50,7 +50,7 @@ func main() {
         chantrace.Send(ch, "hello")
     })
 
-    msg := chantrace.Recv(ch)
+    msg := chantrace.Recv[string](ch)
     fmt.Println(msg)
 }
 ```
@@ -91,8 +91,8 @@ chantrace.Register(existing, "existing")
 
 // Send and receive
 chantrace.Send(ch, 42)
-val := chantrace.Recv(ch)
-val, ok := chantrace.RecvOk(ch)
+val := chantrace.Recv[int](ch)
+val, ok := chantrace.RecvOk[int](ch)
 
 // Iterate
 for v := range chantrace.Range(ch) {
@@ -310,7 +310,7 @@ func main() {
         chantrace.Send(done, struct{}{})
     })
 
-    chantrace.Recv(done)
+    chantrace.Recv[struct{}](done)
 }
 ```
 
@@ -403,7 +403,7 @@ Every traced operation follows the same pattern:
 
 1. Check `enabled` atomic bool. If off, do the native channel op and return.
 2. Look up channel metadata from the registry (a `sync.Map` keyed by channel pointer).
-3. Capture the caller's program counter (~100ns via `runtime.Callers`).
+3. Capture the caller's program counter (optional, ~100ns via `runtime.Callers`).
 4. Emit a Start event to the collector (for blocking ops like Send/Recv).
 5. Perform the native channel operation.
 6. Emit a Done event to the collector.

@@ -1,7 +1,8 @@
 package chantrace
 
 import (
-	"sort"
+	"cmp"
+	"slices"
 	"sync"
 	"time"
 )
@@ -160,7 +161,6 @@ func (a *Analyzer) Report() AnalyzerReport {
 	now := time.Now().UnixNano()
 
 	a.mu.Lock()
-	defer a.mu.Unlock()
 
 	report := AnalyzerReport{
 		Timestamp:      now,
@@ -168,13 +168,13 @@ func (a *Analyzer) Report() AnalyzerReport {
 		StateUncertain: a.stateUncertain,
 	}
 
-	for _, e := range a.inflight {
+	addBlocked := func(e Event) {
 		if e.Timestamp == 0 {
-			continue
+			return
 		}
 		d := now - e.Timestamp
 		if d < int64(a.blockedThreshold) {
-			continue
+			return
 		}
 		report.Blocked = append(report.Blocked, BlockedOp{
 			Kind:        e.Kind,
@@ -190,27 +190,11 @@ func (a *Analyzer) Report() AnalyzerReport {
 			DurationNS:  d,
 		})
 	}
+	for _, e := range a.inflight {
+		addBlocked(e)
+	}
 	for _, e := range a.rangeWait {
-		if e.Timestamp == 0 {
-			continue
-		}
-		d := now - e.Timestamp
-		if d < int64(a.blockedThreshold) {
-			continue
-		}
-		report.Blocked = append(report.Blocked, BlockedOp{
-			Kind:        e.Kind,
-			OpID:        e.OpID,
-			GoroutineID: e.GoroutineID,
-			ChannelID:   e.ChannelID,
-			ChannelName: e.ChannelName,
-			ValueType:   e.ValueType,
-			PC:          e.PC,
-			File:        e.File,
-			Line:        e.Line,
-			Since:       e.Timestamp,
-			DurationNS:  d,
-		})
+		addBlocked(e)
 	}
 	for _, e := range a.spawned {
 		if e.Timestamp == 0 {
@@ -232,17 +216,19 @@ func (a *Analyzer) Report() AnalyzerReport {
 		})
 	}
 
-	sort.Slice(report.Blocked, func(i, j int) bool {
-		if report.Blocked[i].DurationNS == report.Blocked[j].DurationNS {
-			return report.Blocked[i].OpID < report.Blocked[j].OpID
+	a.mu.Unlock()
+
+	slices.SortFunc(report.Blocked, func(a, b BlockedOp) int {
+		if c := cmp.Compare(b.DurationNS, a.DurationNS); c != 0 {
+			return c
 		}
-		return report.Blocked[i].DurationNS > report.Blocked[j].DurationNS
+		return cmp.Compare(a.OpID, b.OpID)
 	})
-	sort.Slice(report.Leaked, func(i, j int) bool {
-		if report.Leaked[i].DurationNS == report.Leaked[j].DurationNS {
-			return report.Leaked[i].GoroutineID < report.Leaked[j].GoroutineID
+	slices.SortFunc(report.Leaked, func(a, b LeakedGoroutine) int {
+		if c := cmp.Compare(b.DurationNS, a.DurationNS); c != 0 {
+			return c
 		}
-		return report.Leaked[i].DurationNS > report.Leaked[j].DurationNS
+		return cmp.Compare(a.GoroutineID, b.GoroutineID)
 	})
 
 	return report

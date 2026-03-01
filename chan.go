@@ -12,29 +12,30 @@ import (
 
 const maxValueRunes = 64
 
-// capturePC records the program counter of the caller's caller (~100ns).
+// capturePC records the program counter at the given skip depth (~100ns).
 // The PC is resolved to file:line lazily in the drain goroutine via resolvePC.
-func capturePC() uintptr {
+func capturePC(skip int) uintptr {
 	var pcs [1]uintptr
-	runtime.Callers(3, pcs[:]) // skip Callers, capturePC, immediate caller
+	runtime.Callers(skip, pcs[:])
 	return pcs[0]
 }
 
-// maybeCapturePC returns the caller PC if PC capture is enabled and selected by
-// sampling policy; otherwise it returns 0.
+// maybeCapturePC returns the caller's caller PC if PC capture is enabled and
+// selected by sampling policy; otherwise it returns 0.
+// skip=4: runtime.Callers, capturePC, maybeCapturePC, Send/Recv/etc.
 func maybeCapturePC() uintptr {
 	if !pcCapture.Load() {
 		return 0
 	}
 	every := pcSampleEvery.Load()
 	if every <= 1 {
-		return capturePC()
+		return capturePC(4)
 	}
 	seq := pcSampleSeq.Add(1)
 	if (seq-1)%uint64(every) != 0 {
 		return 0
 	}
-	return capturePC()
+	return capturePC(4)
 }
 
 // resolvePC converts a raw PC to file:line. Called on the cold path

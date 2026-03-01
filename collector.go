@@ -71,7 +71,10 @@ func (c *collector) start() {
 	eventCh := c.eventCh
 	doneCh := c.doneCh
 	c.wg.Add(1)
-	go c.drain(eventCh, doneCh)
+	go func() {
+		defer c.wg.Done()
+		c.drain(eventCh, doneCh)
+	}()
 }
 
 // stopDrain signals the drain goroutine to finish and waits for it.
@@ -90,7 +93,6 @@ func (c *collector) stopDrain() {
 
 // drain reads events from eventCh and dispatches them to backends sequentially.
 func (c *collector) drain(eventCh chan Event, done chan struct{}) {
-	defer c.wg.Done()
 	for {
 		select {
 		case e := <-eventCh:

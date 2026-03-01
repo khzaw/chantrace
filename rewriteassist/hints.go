@@ -1,11 +1,12 @@
 package rewriteassist
 
 import (
+	"cmp"
 	"fmt"
 	"go/ast"
 	"go/token"
 	"go/types"
-	"sort"
+	"slices"
 )
 
 // HintKind categorizes migration hints for chantrace adoption.
@@ -21,7 +22,6 @@ const (
 // Hint describes a location that likely requires chantrace wrapping.
 type Hint struct {
 	Kind       HintKind
-	Pos        token.Pos
 	Position   token.Position
 	Message    string
 	Suggestion string
@@ -41,7 +41,6 @@ func CollectFile(fset *token.FileSet, file *ast.File, info *types.Info) []Hint {
 			if isChanType(info.TypeOf(n.Chan)) {
 				hints = append(hints, Hint{
 					Kind:       HintSend,
-					Pos:        n.Pos(),
 					Position:   fset.Position(n.Pos()),
 					Message:    "direct channel send is not traced",
 					Suggestion: "replace with chantrace.Send(ch, value)",
@@ -51,7 +50,6 @@ func CollectFile(fset *token.FileSet, file *ast.File, info *types.Info) []Hint {
 			if n.Op == token.ARROW && isChanType(info.TypeOf(n.X)) {
 				hints = append(hints, Hint{
 					Kind:       HintRecv,
-					Pos:        n.Pos(),
 					Position:   fset.Position(n.Pos()),
 					Message:    "direct channel receive is not traced",
 					Suggestion: "replace with chantrace.Recv(ch) or chantrace.RecvOk(ch)",
@@ -61,7 +59,6 @@ func CollectFile(fset *token.FileSet, file *ast.File, info *types.Info) []Hint {
 			if isChanType(info.TypeOf(n.X)) {
 				hints = append(hints, Hint{
 					Kind:       HintRange,
-					Pos:        n.Pos(),
 					Position:   fset.Position(n.Pos()),
 					Message:    "range over channel is not traced",
 					Suggestion: "replace with for v := range chantrace.Range(ch) { ... }",
@@ -70,7 +67,6 @@ func CollectFile(fset *token.FileSet, file *ast.File, info *types.Info) []Hint {
 		case *ast.GoStmt:
 			hints = append(hints, Hint{
 				Kind:       HintGoSpawn,
-				Pos:        n.Pos(),
 				Position:   fset.Position(n.Pos()),
 				Message:    "goroutine launched with go is not traced",
 				Suggestion: "replace with chantrace.Go(ctx, label, func(ctx context.Context) { ... })",
@@ -79,7 +75,7 @@ func CollectFile(fset *token.FileSet, file *ast.File, info *types.Info) []Hint {
 		return true
 	})
 
-	sort.Slice(hints, func(i, j int) bool { return hints[i].Pos < hints[j].Pos })
+	slices.SortFunc(hints, func(a, b Hint) int { return cmp.Compare(a.Position.Offset, b.Position.Offset) })
 	return hints
 }
 
