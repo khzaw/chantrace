@@ -185,7 +185,12 @@ chantrace.Enable(
 defer chantrace.Shutdown()
 
 report := analyzer.Report()
-fmt.Println("blocked:", len(report.Blocked), "leaked:", len(report.Leaked))
+fmt.Println(
+    "blocked:", len(report.Blocked),
+    "leaked:", len(report.Leaked),
+    "deadlocks:", len(report.Deadlocks),
+    "channel_waits:", len(report.ChannelWaits),
+)
 ```
 
 ### Inspection

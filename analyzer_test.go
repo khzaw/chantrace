@@ -233,6 +233,61 @@ func TestAnalyzerNoDeadlockForSingleBlockedSend(t *testing.T) {
 	}
 }
 
+func TestAnalyzerDeadlockConfidenceLoweredWhenStateUncertain(t *testing.T) {
+	analyzer := NewAnalyzer(WithAnalyzerBlockedThreshold(0))
+	now := time.Now().Add(-time.Second).UnixNano()
+
+	analyzer.HandleEvent(Event{
+		Kind:        ChanSendStart,
+		OpID:        1,
+		Timestamp:   now,
+		GoroutineID: 10,
+		ChannelID:   100,
+		ChannelName: "jobs",
+		ValueType:   "int",
+	})
+	analyzer.HandleEvent(Event{
+		Kind:        ChanRecvStart,
+		OpID:        2,
+		Timestamp:   now,
+		GoroutineID: 11,
+		ChannelID:   100,
+		ChannelName: "jobs",
+		ValueType:   "int",
+	})
+	analyzer.HandleEvent(Event{
+		Kind:      TraceLost,
+		Timestamp: time.Now().UnixNano(),
+		Dropped:   3,
+	})
+	analyzer.HandleEvent(Event{
+		Kind:        ChanSendStart,
+		OpID:        4,
+		Timestamp:   now,
+		GoroutineID: 10,
+		ChannelID:   100,
+		ChannelName: "jobs",
+		ValueType:   "int",
+	})
+	analyzer.HandleEvent(Event{
+		Kind:        ChanRecvStart,
+		OpID:        5,
+		Timestamp:   now,
+		GoroutineID: 11,
+		ChannelID:   100,
+		ChannelName: "jobs",
+		ValueType:   "int",
+	})
+
+	report := analyzer.Report()
+	if len(report.Deadlocks) != 1 {
+		t.Fatalf("deadlock count = %d, want 1", len(report.Deadlocks))
+	}
+	if report.Deadlocks[0].Confidence != "low" {
+		t.Fatalf("deadlock confidence = %q, want low", report.Deadlocks[0].Confidence)
+	}
+}
+
 func hasGraphEdge(edges []WaitGraphEdge, from, to, relation string) bool {
 	for _, e := range edges {
 		if e.FromID == from && e.ToID == to && e.Relation == relation {

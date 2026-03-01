@@ -35,12 +35,30 @@ func main() {
 
 	time.Sleep(30 * time.Millisecond)
 	r := analyzer.Report()
-	fmt.Printf("blocked=%d leaked=%d uncertain=%v\n", len(r.Blocked), len(r.Leaked), r.StateUncertain)
+	fmt.Printf(
+		"blocked=%d leaked=%d deadlocks=%d channel_waits=%d graph(nodes=%d, edges=%d) uncertain=%v\n",
+		len(r.Blocked),
+		len(r.Leaked),
+		len(r.Deadlocks),
+		len(r.ChannelWaits),
+		len(r.WaitGraph.Nodes),
+		len(r.WaitGraph.Edges),
+		r.StateUncertain,
+	)
 
 	_ = chantrace.Recv[int](blocked)
 	chantrace.Close(release)
 
 	time.Sleep(20 * time.Millisecond)
 	r = analyzer.Report()
-	fmt.Printf("after cleanup: blocked=%d leaked=%d uncertain=%v\n", len(r.Blocked), len(r.Leaked), r.StateUncertain)
+	fmt.Printf(
+		"after cleanup: blocked=%d leaked=%d deadlocks=%d channel_waits=%d graph(nodes=%d, edges=%d) uncertain=%v\n",
+		len(r.Blocked),
+		len(r.Leaked),
+		len(r.Deadlocks),
+		len(r.ChannelWaits),
+		len(r.WaitGraph.Nodes),
+		len(r.WaitGraph.Edges),
+		r.StateUncertain,
+	)
 }
