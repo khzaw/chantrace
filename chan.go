@@ -247,9 +247,20 @@ func RecvOk[T any](ch <-chan T) (T, bool) {
 // Close performs a traced close on the channel and unregisters it.
 func Close[T any](ch chan T) {
 	ptr, name, valType := chanInfo[T](ch)
+	tracing := enabled.Load()
+	var gid int64
+	var pc uintptr
+	bufLen := len(ch)
+	bufCap := cap(ch)
+	if tracing {
+		gid = currentRuntimeGID()
+		pc = capturePC()
+	}
 
-	if enabled.Load() {
-		gid := currentRuntimeGID()
+	close(ch)
+	unregisterChan(ch)
+
+	if tracing {
 		defaultCollector.emit(Event{
 			Kind:        ChanClose,
 			Timestamp:   time.Now().UnixNano(),
@@ -257,14 +268,11 @@ func Close[T any](ch chan T) {
 			ChannelID:   ptr,
 			ChannelName: name,
 			ValueType:   valType,
-			BufLen:      len(ch),
-			BufCap:      cap(ch),
-			PC:          capturePC(),
+			BufLen:      bufLen,
+			BufCap:      bufCap,
+			PC:          pc,
 		})
 	}
-
-	close(ch)
-	unregisterChan(ch)
 }
 
 // Range returns an iter.Seq that performs traced receives over the channel.

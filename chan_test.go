@@ -245,6 +245,57 @@ func TestClose(t *testing.T) {
 	}
 }
 
+func TestCloseDoubleCloseDoesNotEmitSpuriousEvent(t *testing.T) {
+	rec := setupTracing(t)
+
+	ch := Make[int]("double-close", 1)
+	Close(ch)
+
+	func() {
+		defer func() {
+			if r := recover(); r == nil {
+				t.Fatal("expected panic on double close")
+			}
+		}()
+		Close(ch) // should panic and should not emit ChanClose
+	}()
+
+	events := waitForEvents(rec, 2, time.Second) // Make + first Close
+	if len(events) != 2 {
+		t.Fatalf("event count = %d, want 2", len(events))
+	}
+
+	closeCount := 0
+	for _, e := range events {
+		if e.Kind == ChanClose && e.ChannelName == "double-close" {
+			closeCount++
+		}
+	}
+	if closeCount != 1 {
+		t.Fatalf("close event count = %d, want 1", closeCount)
+	}
+}
+
+func TestCloseNilChannelDoesNotEmitEvent(t *testing.T) {
+	rec := setupTracing(t)
+
+	var ch chan int
+	func() {
+		defer func() {
+			if r := recover(); r == nil {
+				t.Fatal("expected panic when closing nil channel")
+			}
+		}()
+		Close(ch)
+	}()
+
+	time.Sleep(10 * time.Millisecond)
+	events := rec.getEvents()
+	if len(events) != 0 {
+		t.Fatalf("unexpected events after failed nil close: got %d", len(events))
+	}
+}
+
 func TestRange(t *testing.T) {
 	rec := setupTracing(t)
 
