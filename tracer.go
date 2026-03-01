@@ -19,6 +19,9 @@ var (
 func init() {
 	pcCapture.Store(true)
 	pcSampleEvery.Store(1)
+	if noTracingBuild {
+		return
+	}
 	if mode := os.Getenv("CHANTRACE"); mode != "" {
 		autoEnable(mode)
 	}
@@ -87,27 +90,24 @@ func WithBackend(b Backend) Option {
 	}
 }
 
-// WithBufferSize sets the async event buffer size for backend dispatch.
-// Default is 16384. Events that exceed the buffer are dropped from backend
-// dispatch but preserved in the ring buffer for Snapshot().
+// WithBufferSize sets the async dispatch buffer (default 16384).
+// Overflow drops from backend dispatch but stays in the ring for [Snapshot].
 func WithBufferSize(n int) Option {
 	return func(c *traceConfig) {
 		c.bufSize = n
 	}
 }
 
-// WithValueSnapshot controls whether values are captured via fmt.Sprintf
-// in Send/Recv events. Default is true. Disable in performance-sensitive
-// paths where value formatting (reflection, String() methods) is too costly.
+// WithValueSnapshot controls whether values are captured via fmt.Sprintf.
+// Default is true. Disable to avoid reflection and String() overhead.
 func WithValueSnapshot(on bool) Option {
 	return func(c *traceConfig) {
 		c.snapValues = &on
 	}
 }
 
-// WithPCCapture controls whether program counters are captured for events.
-// Default is true. Disable in high-throughput paths to avoid runtime.Callers
-// overhead.
+// WithPCCapture controls whether program counters are captured.
+// Default is true. Disable to skip the ~100ns runtime.Callers cost per event.
 func WithPCCapture(on bool) Option {
 	return func(c *traceConfig) {
 		c.pcCapture = &on
@@ -122,12 +122,11 @@ func WithPCSampleEvery(n uint32) Option {
 	}
 }
 
-// backendFactories allows sub-packages to register backend constructors.
 var backendFactories sync.Map // string → factory function
 
-// RegisterBackendFactory registers a named backend factory.
-// Used by backend sub-packages in their init() functions.
-// Supported factory types: func() Backend, func(string) Backend.
+// RegisterBackendFactory registers a named backend constructor, typically
+// called from a backend sub-package's init(). Accepts func() Backend
+// or func(string) Backend.
 func RegisterBackendFactory(name string, factory any) {
 	switch factory.(type) {
 	case func() Backend, func(string) Backend:
@@ -137,12 +136,17 @@ func RegisterBackendFactory(name string, factory any) {
 	}
 }
 
-// Enable starts tracing with the given options.
-// Calling Enable again replaces existing backends.
-// If no backends are specified, defaults to WithLogStream().
+// Enable starts tracing. Calling again replaces backends.
+// Defaults to [WithLogStream] if no backends are specified.
 func Enable(opts ...Option) {
 	shutdownMu.Lock()
 	defer shutdownMu.Unlock()
+
+	if noTracingBuild {
+		enabled.Store(false)
+		defaultCollector.closeBackends()
+		return
+	}
 
 	cfg := &traceConfig{}
 	for _, opt := range opts {
@@ -157,7 +161,7 @@ func Enable(opts ...Option) {
 	if cfg.snapValues != nil {
 		snapshotValues.Store(*cfg.snapValues)
 	} else {
-		snapshotValues.Store(true) // default: capture values
+		snapshotValues.Store(true)
 	}
 	if cfg.pcCapture != nil {
 		pcCapture.Store(*cfg.pcCapture)

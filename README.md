@@ -171,6 +171,16 @@ defer chantrace.Shutdown()
 
 If `WithTUI` or `WithWeb` are used without their backend package imports, chantrace falls back to `WithLogStream`.
 
+### No-Op Production Build
+
+If you keep chantrace wrappers in production code but want tracing hard-disabled at build time, compile with:
+
+```bash
+go build -tags chantrace_nop ./...
+```
+
+With `chantrace_nop`, `Enable(...)` becomes a no-op and `Enabled()` always stays false, so wrappers execute native channel/goroutine behavior without emitting trace events.
+
 ### Active Analysis (Blocked/Leak Detection)
 
 ```go
