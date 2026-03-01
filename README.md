@@ -177,6 +177,20 @@ This registers:
 - `GET /debug/chantrace/events?n=100` -- recent events as JSON
 - `GET /debug/chantrace/channels` -- registered channels as JSON
 
+### Adoption Tooling
+
+Use the static analyzer to flag native channel/goroutine operations:
+
+```bash
+go run ./cmd/chantracecheck ./...
+```
+
+Use rewrite assist to print migration hints with suggested wrappers:
+
+```bash
+go run ./cmd/chantrace-rewrite-assist ./...
+```
+
 ## Detecting Blocked Operations
 
 Blocking operations emit a Start event *before* the channel op and a Done event *after*. If a goroutine is stuck on a send or receive, you'll see the Start event without a matching Done.
