@@ -1,10 +1,10 @@
 # chantrace
 
-Concurrency observability for Go: tracing, analysis, and tooling.
+On-demand concurrency diagnostics for Go: tracing, analysis, and tooling.
 
-Trace channel operations and goroutine lifecycles with lightweight wrappers, then move from raw events to actionable diagnostics such as blocked operations, leaked goroutines, and trace-loss signals.
+chantrace is built for focused debugging and observability sessions when you need visibility into channel operations and goroutine lifecycles. It helps you move from raw events to actionable diagnostics such as blocked operations, leaked goroutines, and trace-loss signals.
 
-Channels remain plain `chan T` values. Start with drop-in wrappers (`Send`, `Recv`, `Range`, `Select`, `Go`), then scale up with analyzer backends, web/tui/log sinks, and adoption tooling (`chantracecheck`, rewrite assist).
+Channels remain plain `chan T` values. Instrument with wrappers (`Send`, `Recv`, `Range`, `Select`, `Go`), then activate tracing when investigating concurrency behavior using analyzer backends, web/tui/log sinks, and adoption tooling (`chantracecheck`, rewrite assist).
 
 ```go
 orders := chantrace.Make[Order]("orders", 10) // traced chan Order
@@ -65,17 +65,34 @@ CHANTRACE=tui go run .     # requires blank import: backend/tui
 CHANTRACE=web go run .     # requires blank import: backend/web
 ```
 
+## Investigation Workflow
+
+1. Instrument concurrency boundaries with `chantrace` wrappers (`Send`, `Recv`, `Range`, `Select`, `Go`).
+2. Keep tracing activation behind runtime configuration (`Enable(...)` options or `CHANTRACE` env var).
+3. During a debugging session, enable the sink that fits your workflow (`WithLogStream`, `WithTUI`, `WithWeb`, analyzer backend).
+4. After the issue is isolated, return to standard runtime configuration while keeping instrumentation available for future investigations.
+
 ## Examples
 
 For usage examples, see [examples](./examples).
 
-## Trade-offs
+## Screenshots
 
-- Reflection overhead: `chantrace.Select` uses `reflect.Select`, which is significantly slower than native `select`.
-- Stack parsing cost: goroutine attribution uses `runtime.Stack` parsing, which is robust but expensive in tight loops.
-- Manual instrumentation: traced visibility requires using `chantrace` wrappers (`Send`, `Recv`, `Range`, `Select`, `Go`) in concurrency paths.
+Web timeline backend (`WithWeb(":4884")`):
 
-These are intentional trade-offs for observability. Use `WithPCCapture(false)` and/or `WithPCSampleEvery(...)` to reduce tracing overhead when needed.
+![chantrace web timeline dashboard](.github/screenshots/web-backend-demo.jpeg)
+
+Log stream backend (`WithLogStream()`):
+
+![chantrace log stream output](.github/screenshots/logstream-demo.png)
+
+## Diagnostic Characteristics
+
+- Reflection-backed select tracing: `chantrace.Select` uses `reflect.Select` to capture case-level select behavior.
+- Stack-based goroutine attribution: goroutine identity is derived from `runtime.Stack` parsing for robust correlation.
+- Explicit instrumentation points: wrappers (`Send`, `Recv`, `Range`, `Select`, `Go`) provide precise event boundaries in concurrency paths.
+
+These characteristics prioritize high-fidelity observability during debugging sessions. Use `WithPCCapture(false)` and/or `WithPCSampleEvery(...)` to tune runtime cost for your investigation profile.
 
 ## API
 
