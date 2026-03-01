@@ -202,6 +202,35 @@ func TestAnalyzerReportChannelWaitsAndGraph(t *testing.T) {
 	if !hasGraphEdge(report.WaitGraph.Edges, "ch:100", "g:10", "potential-send-counterpart") {
 		t.Fatal("missing counterpart edge ch:100 -> g:10")
 	}
+	if len(report.Deadlocks) != 1 {
+		t.Fatalf("deadlock count = %d, want 1", len(report.Deadlocks))
+	}
+	if report.Deadlocks[0].Confidence != "high" {
+		t.Fatalf("deadlock confidence = %q, want high", report.Deadlocks[0].Confidence)
+	}
+	if len(report.Deadlocks[0].Goroutines) != 3 {
+		t.Fatalf("deadlock goroutines = %v, want [10 11 12]", report.Deadlocks[0].Goroutines)
+	}
+}
+
+func TestAnalyzerNoDeadlockForSingleBlockedSend(t *testing.T) {
+	analyzer := NewAnalyzer(WithAnalyzerBlockedThreshold(0))
+	now := time.Now().Add(-time.Second).UnixNano()
+
+	analyzer.HandleEvent(Event{
+		Kind:        ChanSendStart,
+		OpID:        1,
+		Timestamp:   now,
+		GoroutineID: 10,
+		ChannelID:   100,
+		ChannelName: "jobs",
+		ValueType:   "int",
+	})
+
+	report := analyzer.Report()
+	if len(report.Deadlocks) != 0 {
+		t.Fatalf("deadlock count = %d, want 0", len(report.Deadlocks))
+	}
 }
 
 func hasGraphEdge(edges []WaitGraphEdge, from, to, relation string) bool {

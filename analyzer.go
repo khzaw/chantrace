@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -43,6 +44,7 @@ type AnalyzerReport struct {
 	Leaked         []LeakedGoroutine  `json:"leaked,omitempty"`
 	ChannelWaits   []ChannelWaitState `json:"channel_waits,omitempty"`
 	WaitGraph      WaitGraph          `json:"wait_graph"`
+	Deadlocks      []DeadlockFinding  `json:"deadlocks,omitempty"`
 	DroppedEvents  uint64             `json:"dropped_events"`
 	StateUncertain bool               `json:"state_uncertain"`
 }
@@ -110,6 +112,17 @@ type WaitGraphEdge struct {
 	OpID        uint64  `json:"op_id,omitempty"`
 	Since       int64   `json:"since"`
 	DurationNS  int64   `json:"duration_ns"`
+}
+
+// DeadlockFinding is a likely deadlock cycle discovered from the wait graph.
+type DeadlockFinding struct {
+	ID          string    `json:"id"`
+	Nodes       []string  `json:"nodes"`
+	Goroutines  []int64   `json:"goroutines,omitempty"`
+	Channels    []uintptr `json:"channels,omitempty"`
+	LongestWait int64     `json:"longest_wait_ns"`
+	Confidence  string    `json:"confidence"`
+	Reason      string    `json:"reason"`
 }
 
 type rangeWaitKey struct {
@@ -269,6 +282,7 @@ func (a *Analyzer) Report() AnalyzerReport {
 		return cmp.Compare(a.GoroutineID, b.GoroutineID)
 	})
 	report.ChannelWaits, report.WaitGraph = buildWaitGraph(report.Blocked)
+	report.Deadlocks = detectDeadlockCycles(report.WaitGraph, report.StateUncertain)
 
 	return report
 }
@@ -450,6 +464,156 @@ func buildWaitGraph(blocked []BlockedOp) ([]ChannelWaitState, WaitGraph) {
 	})
 
 	return states, graph
+}
+
+func detectDeadlockCycles(graph WaitGraph, uncertain bool) []DeadlockFinding {
+	if len(graph.Nodes) == 0 || len(graph.Edges) == 0 {
+		return nil
+	}
+
+	nodeByID := make(map[string]WaitGraphNode, len(graph.Nodes))
+	for _, n := range graph.Nodes {
+		nodeByID[n.ID] = n
+	}
+
+	adj := make(map[string][]string, len(graph.Nodes))
+	for _, e := range graph.Edges {
+		adj[e.FromID] = append(adj[e.FromID], e.ToID)
+	}
+
+	index := 0
+	stack := make([]string, 0, len(graph.Nodes))
+	onStack := make(map[string]bool, len(graph.Nodes))
+	indices := make(map[string]int, len(graph.Nodes))
+	low := make(map[string]int, len(graph.Nodes))
+
+	var sccs [][]string
+	var strongConnect func(string)
+	strongConnect = func(v string) {
+		indices[v] = index
+		low[v] = index
+		index++
+
+		stack = append(stack, v)
+		onStack[v] = true
+
+		for _, w := range adj[v] {
+			if _, seen := indices[w]; !seen {
+				strongConnect(w)
+				if low[w] < low[v] {
+					low[v] = low[w]
+				}
+			} else if onStack[w] && indices[w] < low[v] {
+				low[v] = indices[w]
+			}
+		}
+
+		if low[v] == indices[v] {
+			var scc []string
+			for {
+				n := stack[len(stack)-1]
+				stack = stack[:len(stack)-1]
+				onStack[n] = false
+				scc = append(scc, n)
+				if n == v {
+					break
+				}
+			}
+			sccs = append(sccs, scc)
+		}
+	}
+
+	for _, n := range graph.Nodes {
+		if _, seen := indices[n.ID]; !seen {
+			strongConnect(n.ID)
+		}
+	}
+
+	edgeDur := make(map[string]int64, len(graph.Edges))
+	for _, e := range graph.Edges {
+		k := e.FromID + "->" + e.ToID
+		if e.DurationNS > edgeDur[k] {
+			edgeDur[k] = e.DurationNS
+		}
+	}
+
+	var findings []DeadlockFinding
+	for _, scc := range sccs {
+		if len(scc) == 1 && !hasSelfLoop(scc[0], adj) {
+			continue
+		}
+
+		inSCC := make(map[string]bool, len(scc))
+		for _, id := range scc {
+			inSCC[id] = true
+		}
+
+		var goroutines []int64
+		var channels []uintptr
+		for _, id := range scc {
+			n := nodeByID[id]
+			switch n.Kind {
+			case "goroutine":
+				goroutines = append(goroutines, n.GoroutineID)
+			case "channel":
+				channels = append(channels, n.ChannelID)
+			}
+		}
+		if len(goroutines) == 0 || len(channels) == 0 {
+			continue
+		}
+
+		longest := int64(0)
+		for from, tos := range adj {
+			if !inSCC[from] {
+				continue
+			}
+			for _, to := range tos {
+				if !inSCC[to] {
+					continue
+				}
+				if d := edgeDur[from+"->"+to]; d > longest {
+					longest = d
+				}
+			}
+		}
+
+		slices.Sort(scc)
+		slices.Sort(goroutines)
+		slices.Sort(channels)
+
+		confidence := "high"
+		if uncertain {
+			confidence = "low"
+		}
+		findings = append(findings, DeadlockFinding{
+			ID:          "cycle:" + strings.Join(scc, ","),
+			Nodes:       scc,
+			Goroutines:  goroutines,
+			Channels:    channels,
+			LongestWait: longest,
+			Confidence:  confidence,
+			Reason:      "cyclic wait relationship between blocked goroutines and channels",
+		})
+	}
+
+	slices.SortFunc(findings, func(a, b DeadlockFinding) int {
+		if c := cmp.Compare(b.LongestWait, a.LongestWait); c != 0 {
+			return c
+		}
+		return cmp.Compare(a.ID, b.ID)
+	})
+
+	return findings
+}
+
+func hasSelfLoop(id string, adj map[string][]string) bool {
+	for _, to := range adj[id] {
+		if to == id {
+			return true
+		}
+	}
+	return false
 }
 
 func gidNodeID(gid int64) string {
