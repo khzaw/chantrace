@@ -13,6 +13,7 @@ const (
 	ChanClose
 	ChanSelectStart
 	ChanSelectDone
+	ChanRangeStart
 	ChanRange
 	ChanRangeDone
 	GoSpawn
@@ -30,6 +31,7 @@ var eventKindNames = [...]string{
 	ChanClose:       "close",
 	ChanSelectStart: "select→",
 	ChanSelectDone:  "select✓",
+	ChanRangeStart:  "range→",
 	ChanRange:       "range",
 	ChanRangeDone:   "range-done",
 	GoSpawn:         "go-spawn",
@@ -47,7 +49,7 @@ func (k EventKind) String() string {
 // Event represents a single traced channel or goroutine operation.
 type Event struct {
 	Kind        EventKind
-	Timestamp   int64   // UnixNano
+	Timestamp   int64 // UnixNano
 	GoroutineID int64
 	ChannelID   uintptr
 	ChannelName string
@@ -59,7 +61,7 @@ type Event struct {
 	RecvOK      bool   // whether channel was open on receive
 	Dropped     uint64 // number of events dropped; only nonzero for TraceLost
 	SelectIndex int    // which case fired; only meaningful for ChanSelectDone
-	ParentGID   int64   // for GoSpawn
+	ParentGID   int64  // for GoSpawn
 	GoLabel     string
 	PC          uintptr // raw program counter; resolved to File/Line lazily
 	File        string

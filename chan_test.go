@@ -219,12 +219,16 @@ func TestRange(t *testing.T) {
 		t.Errorf("Range values = %v, want [1 2 3]", vals)
 	}
 
-	// Make(1) + Send*3(Start+Done=6) + Close(1) + Range*3(3) + RangeDone(1) = 12
-	events := waitForEvents(rec, 12, time.Second)
+	// Make(1) + Send*3(Start+Done=6) + Close(1) + RangeStart*4(4) + Range*3(3) + RangeDone(1) = 16
+	events := waitForEvents(rec, 16, time.Second)
 
+	rangeStartCount := 0
 	rangeCount := 0
 	rangeDone := false
 	for _, e := range events {
+		if e.Kind == ChanRangeStart {
+			rangeStartCount++
+		}
 		if e.Kind == ChanRange {
 			rangeCount++
 		}
@@ -232,11 +236,65 @@ func TestRange(t *testing.T) {
 			rangeDone = true
 		}
 	}
+	if rangeStartCount != 4 {
+		t.Errorf("range start event count = %d, want 4", rangeStartCount)
+	}
 	if rangeCount != 3 {
 		t.Errorf("range event count = %d, want 3", rangeCount)
 	}
 	if !rangeDone {
 		t.Error("missing ChanRangeDone event")
+	}
+}
+
+func TestRangeStartBeforeValue(t *testing.T) {
+	rec := setupTracing(t)
+
+	ch := Make[int]("range-wait", 0)
+	done := make(chan struct{})
+
+	go func() {
+		defer close(done)
+		time.Sleep(5 * time.Millisecond)
+		Send(ch, 42)
+		Close(ch)
+	}()
+
+	var values []int
+	for v := range Range[int](ch) {
+		values = append(values, v)
+	}
+	<-done
+
+	if len(values) != 1 || values[0] != 42 {
+		t.Fatalf("Range values = %v, want [42]", values)
+	}
+
+	// Make + SendStart + SendDone + Close + RangeStart*2 + Range + RangeDone = 8
+	events := waitForEvents(rec, 8, time.Second)
+
+	startIdx := -1
+	valueIdx := -1
+	for i, e := range events {
+		if e.ChannelName != "range-wait" {
+			continue
+		}
+		if e.Kind == ChanRangeStart && startIdx == -1 {
+			startIdx = i
+		}
+		if e.Kind == ChanRange && valueIdx == -1 {
+			valueIdx = i
+		}
+	}
+
+	if startIdx == -1 {
+		t.Fatal("missing ChanRangeStart event")
+	}
+	if valueIdx == -1 {
+		t.Fatal("missing ChanRange event")
+	}
+	if startIdx > valueIdx {
+		t.Fatalf("ChanRangeStart index = %d, ChanRange index = %d; want start before value", startIdx, valueIdx)
 	}
 }
 

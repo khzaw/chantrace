@@ -59,7 +59,7 @@ func (l *logStream) HandleEvent(e Event) {
 			colorBold, e.ChannelName, colorReset,
 			colorDim, e.File, e.Line, colorReset,
 		)
-	case ChanRecvStart:
+	case ChanRecvStart, ChanRangeStart:
 		msg = fmt.Sprintf("%s%s%s %s[%s]%s %s%s%s (%s) %s%s:%d%s",
 			colorDim, ts, colorReset,
 			kindColor, kind, colorReset,
@@ -168,7 +168,7 @@ func kindColor(k EventKind) string {
 		return colorYellow
 	case ChanSendStart, ChanSendDone:
 		return colorGreen
-	case ChanRecvStart, ChanRecvDone, ChanRange, ChanRangeDone:
+	case ChanRecvStart, ChanRecvDone, ChanRangeStart, ChanRange, ChanRangeDone:
 		return colorBlue
 	case ChanClose, TraceLost:
 		return colorRed

@@ -258,7 +258,33 @@ func Range[T any](ch <-chan T) iter.Seq[T] {
 	pc := capturePC()
 
 	return func(yield func(T) bool) {
-		for val := range ch {
+		for {
+			if enabled.Load() {
+				defaultCollector.emit(Event{
+					Kind:        ChanRangeStart,
+					Timestamp:   time.Now().UnixNano(),
+					ChannelID:   ptr,
+					ChannelName: name,
+					ValueType:   valType,
+					PC:          pc,
+				})
+			}
+
+			val, ok := <-ch
+			if !ok {
+				if enabled.Load() {
+					defaultCollector.emit(Event{
+						Kind:        ChanRangeDone,
+						Timestamp:   time.Now().UnixNano(),
+						ChannelID:   ptr,
+						ChannelName: name,
+						ValueType:   valType,
+						PC:          pc,
+					})
+				}
+				return
+			}
+
 			if enabled.Load() {
 				defaultCollector.emit(Event{
 					Kind:        ChanRange,
@@ -273,17 +299,6 @@ func Range[T any](ch <-chan T) iter.Seq[T] {
 			if !yield(val) {
 				return
 			}
-		}
-
-		if enabled.Load() {
-			defaultCollector.emit(Event{
-				Kind:        ChanRangeDone,
-				Timestamp:   time.Now().UnixNano(),
-				ChannelID:   ptr,
-				ChannelName: name,
-				ValueType:   valType,
-				PC:          pc,
-			})
 		}
 	}
 }
