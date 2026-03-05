@@ -274,7 +274,24 @@ Use rewrite assist to print migration hints with suggested wrappers:
 go run ./cmd/chantrace-rewrite-assist ./...
 ```
 
-Both tools are additive. `chantracecheck` is CI-friendly (non-zero diagnostics), while rewrite assist is a migration helper for local planning.
+Apply and revert a local codemod session (debug-first workflow):
+
+```bash
+go run ./cmd/chantrace-patch apply ./...
+# run/debug your repro
+go run ./cmd/chantrace-patch status
+go run ./cmd/chantrace-patch revert
+```
+
+`chantrace-patch` rewrites straightforward send/recv/range operations and stores
+original files under `.chantrace/patches/<id>/`. It also records manual notes
+for constructs that still need hand migration (for example `go` statements).
+
+All three tools are additive:
+
+- `chantracecheck` is analyzer-style diagnostics.
+- `chantrace-rewrite-assist` prints migration hints.
+- `chantrace-patch` is a reversible local codemod workflow.
 
 ## Detecting Blocked Operations
 
