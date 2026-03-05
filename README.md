@@ -301,6 +301,10 @@ go run ./cmd/chantrace-patch apply --only-glob 'internal/pipeline/*.go' ./...
 go run ./cmd/chantrace-patch apply --include-generated ./...
 ```
 
+`--rewrite-go` only rewrites when a `context.Context` variable is unambiguous in
+scope (prefers `ctx` when present). Otherwise it leaves the `go` statement
+unchanged and emits a scaffolded manual note.
+
 All three tools are additive:
 
 - `chantracecheck` is analyzer-style diagnostics.
