@@ -63,6 +63,7 @@ Or enable via environment variable:
 CHANTRACE=1 go run .       # built-in log stream to stderr
 CHANTRACE=tui go run .     # requires blank import: backend/tui
 CHANTRACE=web go run .     # requires blank import: backend/web
+CHANTRACE=notouch go run . # no-touch runtime probe (no channel code rewrites)
 ```
 
 ## Investigation Workflow
@@ -188,6 +189,32 @@ defer chantrace.Shutdown()
 
 If `WithTUI` or `WithWeb` are used without their backend package imports, chantrace falls back to `WithLogStream`.
 
+### No-Touch Runtime Probe
+
+No-touch mode gives a low-perturbation first pass for concurrency investigations
+without replacing `go` or channel operations.
+
+```go
+chantrace.Enable(
+    chantrace.WithNoTouch(
+        chantrace.WithNoTouchPollInterval(250*time.Millisecond),
+        chantrace.WithNoTouchTriggerDelta(32),
+        chantrace.WithNoTouchTriggerConsecutive(3),
+        chantrace.WithNoTouchTriggerWindow(3*time.Second),
+        chantrace.WithNoTouchCooldown(5*time.Second),
+    ),
+)
+defer chantrace.Shutdown()
+
+report := chantrace.NoTouchReport()
+fmt.Println(report.Mode, report.TriggerCount, report.CurrentGoroutines)
+```
+
+When an anomaly is detected from passive goroutine sampling, no-touch mode opens
+short block/mutex profiling windows and stores compact profile summaries in
+`NoTouchReport()`. This is intended as an escalation path: passive first, then
+short triggered windows.
+
 ### Active Analysis (Blocked/Leak Detection)
 
 ```go
@@ -231,6 +258,7 @@ This registers:
 - `GET /debug/chantrace/` -- index page
 - `GET /debug/chantrace/events?n=100` -- recent events as JSON
 - `GET /debug/chantrace/channels` -- registered channels as JSON
+- `GET /debug/chantrace/notouch` -- no-touch probe snapshot as JSON
 
 ### Adoption Tooling
 

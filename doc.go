@@ -12,6 +12,7 @@
 // Tracing can be enabled via environment variable or programmatically:
 //
 //	CHANTRACE=1 go run .                           // log to stderr
+//	CHANTRACE=notouch go run .                     // no-touch runtime probe
 //	chantrace.Enable(chantrace.WithLogStream())    // programmatic
 //	defer chantrace.Shutdown()
 package chantrace

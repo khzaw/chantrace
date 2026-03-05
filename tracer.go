@@ -30,6 +30,8 @@ func autoEnable(mode string) {
 		Enable(WithTUI())
 	case "web":
 		Enable(WithWeb(""))
+	case "notouch":
+		Enable(WithNoTouch())
 	default:
 		Enable(WithLogStream())
 	}
@@ -44,6 +46,7 @@ type traceConfig struct {
 	snapValues    *bool
 	pcCapture     *bool
 	pcSampleEvery *uint32
+	noTouch       *NoTouchConfig
 }
 
 // WithLogStream enables colored log output to stderr.
@@ -119,6 +122,19 @@ func WithPCSampleEvery(n uint32) Option {
 	}
 }
 
+// WithNoTouch enables low-perturbation runtime sampling with anomaly-triggered
+// block/mutex profiling windows. This mode does not require wrapping channel
+// operations and is intended for initial debugging passes.
+func WithNoTouch(opts ...NoTouchOption) Option {
+	return func(c *traceConfig) {
+		cfg := defaultNoTouchConfig()
+		for _, opt := range opts {
+			opt(&cfg)
+		}
+		c.noTouch = &cfg
+	}
+}
+
 var backendFactories sync.Map // string → factory function
 
 // RegisterBackendFactory registers a named backend constructor, typically
@@ -143,7 +159,9 @@ func Enable(opts ...Option) {
 	for _, opt := range opts {
 		opt(cfg)
 	}
-	if len(cfg.backends) == 0 {
+	stopNoTouchLocked()
+
+	if len(cfg.backends) == 0 && cfg.noTouch == nil {
 		cfg.backends = append(cfg.backends, newLogStream())
 	}
 	if cfg.bufSize > 0 {
@@ -168,6 +186,9 @@ func Enable(opts ...Option) {
 	defaultCollector.replaceBackends(cfg.backends)
 	defaultCollector.start()
 	enabled.Store(true)
+	if cfg.noTouch != nil {
+		startNoTouchLocked(*cfg.noTouch)
+	}
 }
 
 // Shutdown stops tracing and flushes all backends.
@@ -176,6 +197,7 @@ func Shutdown() {
 	defer shutdownMu.Unlock()
 
 	enabled.Store(false)
+	stopNoTouchLocked()
 	defaultCollector.closeBackends()
 }
 
