@@ -211,9 +211,21 @@ fmt.Println(report.Mode, report.TriggerCount, report.CurrentGoroutines)
 ```
 
 When an anomaly is detected from passive goroutine sampling, no-touch mode opens
-short block/mutex profiling windows and stores compact profile summaries in
-`NoTouchReport()`. This is intended as an escalation path: passive first, then
-short triggered windows.
+short block/mutex profiling windows, groups goroutine hotspots by wait state
+plus top frame, and stores recent incident summaries in `NoTouchReport()`. This
+is intended as an escalation path: passive first, then short triggered windows.
+
+When enabled through `CHANTRACE=notouch`, operators can tune the passive probe
+without code changes:
+
+```bash
+export CHANTRACE=notouch
+export CHANTRACE_NOTOUCH_POLL_MS=250
+export CHANTRACE_NOTOUCH_TRIGGER_DELTA=32
+export CHANTRACE_NOTOUCH_TRIGGER_CONSECUTIVE=3
+export CHANTRACE_NOTOUCH_TRIGGER_WINDOW_MS=3000
+export CHANTRACE_NOTOUCH_COOLDOWN_MS=5000
+```
 
 ### Active Analysis (Blocked/Leak Detection)
 
@@ -258,7 +270,8 @@ This registers:
 - `GET /debug/chantrace/` -- index page
 - `GET /debug/chantrace/events?n=100` -- recent events as JSON
 - `GET /debug/chantrace/channels` -- registered channels as JSON
-- `GET /debug/chantrace/notouch` -- no-touch probe snapshot as JSON
+- `GET /debug/chantrace/notouch` -- full no-touch probe snapshot as JSON
+- `GET /debug/chantrace/report` -- compact no-touch incident report as JSON
 
 ### Adoption Tooling
 

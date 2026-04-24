@@ -128,6 +128,7 @@ func WithPCSampleEvery(n uint32) Option {
 func WithNoTouch(opts ...NoTouchOption) Option {
 	return func(c *traceConfig) {
 		cfg := defaultNoTouchConfig()
+		applyNoTouchEnv(&cfg, os.Getenv)
 		for _, opt := range opts {
 			opt(&cfg)
 		}
