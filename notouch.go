@@ -3,8 +3,11 @@ package chantrace
 import (
 	"bytes"
 	"context"
+	"os"
 	"runtime"
 	"runtime/pprof"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -22,6 +25,15 @@ const (
 	defaultNoTouchMutexProfileRate    = 8
 	defaultNoTouchProfileMaxBytes     = 16 << 10
 	defaultNoTouchProfileSummaryLines = 40
+	defaultNoTouchIncidentLimit       = 5
+)
+
+const (
+	envNoTouchPollMS             = "CHANTRACE_NOTOUCH_POLL_MS"
+	envNoTouchTriggerDelta       = "CHANTRACE_NOTOUCH_TRIGGER_DELTA"
+	envNoTouchTriggerConsecutive = "CHANTRACE_NOTOUCH_TRIGGER_CONSECUTIVE"
+	envNoTouchTriggerWindowMS    = "CHANTRACE_NOTOUCH_TRIGGER_WINDOW_MS"
+	envNoTouchCooldownMS         = "CHANTRACE_NOTOUCH_COOLDOWN_MS"
 )
 
 // NoTouchOption configures no-touch runtime probing.
@@ -65,6 +77,25 @@ type NoTouchSample struct {
 	TriggerCount uint64 `json:"trigger_count"`
 }
 
+// NoTouchHotspot summarizes a goroutine wait hotspot captured at the end of a trigger window.
+type NoTouchHotspot struct {
+	State      string `json:"state"`
+	TopFrame   string `json:"top_frame"`
+	Count      int    `json:"count"`
+	Persistent bool   `json:"persistent"`
+}
+
+// NoTouchIncident is a compact in-memory summary of a completed trigger window.
+type NoTouchIncident struct {
+	TriggeredAt    int64            `json:"triggered_at"`
+	ResolvedAt     int64            `json:"resolved_at"`
+	PeakGoroutines int              `json:"peak_goroutines"`
+	PeakDelta      int              `json:"peak_delta"`
+	BlockProfile   string           `json:"block_profile,omitempty"`
+	MutexProfile   string           `json:"mutex_profile,omitempty"`
+	Hotspots       []NoTouchHotspot `json:"hotspots,omitempty"`
+}
+
 // NoTouchSnapshot describes current no-touch probe state.
 type NoTouchSnapshot struct {
 	Enabled bool   `json:"enabled"`
@@ -93,7 +124,26 @@ type NoTouchSnapshot struct {
 	LastMutexProfile     string `json:"last_mutex_profile,omitempty"`
 	LastMutexProfileAt   int64  `json:"last_mutex_profile_at,omitempty"`
 
-	Samples []NoTouchSample `json:"samples,omitempty"`
+	Samples         []NoTouchSample   `json:"samples,omitempty"`
+	RecentIncidents []NoTouchIncident `json:"recent_incidents,omitempty"`
+}
+
+// NoTouchCompactReport is a dashboard-oriented summary of no-touch state.
+type NoTouchCompactReport struct {
+	Enabled bool   `json:"enabled"`
+	Mode    string `json:"mode"`
+
+	Timestamp int64 `json:"timestamp"`
+
+	Baseline          int `json:"baseline"`
+	CurrentGoroutines int `json:"current_goroutines"`
+	CurrentDelta      int `json:"current_delta"`
+
+	TriggerActive bool   `json:"trigger_active"`
+	TriggerCount  uint64 `json:"trigger_count"`
+	LastTriggerAt int64  `json:"last_trigger_at"`
+
+	RecentIncidents []NoTouchIncident `json:"recent_incidents,omitempty"`
 }
 
 // WithNoTouchPollInterval sets the passive sampling interval.
@@ -236,6 +286,39 @@ func (c *NoTouchConfig) normalize() {
 	}
 }
 
+func applyNoTouchEnv(cfg *NoTouchConfig, getenv func(string) string) {
+	if getenv == nil {
+		getenv = os.Getenv
+	}
+	if v, ok := envInt(getenv, envNoTouchPollMS); ok {
+		cfg.PollInterval = time.Duration(v) * time.Millisecond
+	}
+	if v, ok := envInt(getenv, envNoTouchTriggerDelta); ok {
+		cfg.TriggerDelta = v
+	}
+	if v, ok := envInt(getenv, envNoTouchTriggerConsecutive); ok {
+		cfg.TriggerConsecutive = v
+	}
+	if v, ok := envInt(getenv, envNoTouchTriggerWindowMS); ok {
+		cfg.TriggerWindow = time.Duration(v) * time.Millisecond
+	}
+	if v, ok := envInt(getenv, envNoTouchCooldownMS); ok {
+		cfg.Cooldown = time.Duration(v) * time.Millisecond
+	}
+}
+
+func envInt(getenv func(string) string, key string) (int, bool) {
+	raw := strings.TrimSpace(getenv(key))
+	if raw == "" {
+		return 0, false
+	}
+	v, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0, false
+	}
+	return v, true
+}
+
 var (
 	noTouchMu      sync.RWMutex
 	defaultNoTouch *noTouchProbe
@@ -253,6 +336,10 @@ type noTouchProbe struct {
 	sampleHead  int
 	sampleCount int
 
+	incidents     []NoTouchIncident
+	incidentHead  int
+	incidentCount int
+
 	baselineSum   int
 	baselineCount int
 	baseline      int
@@ -263,11 +350,13 @@ type noTouchProbe struct {
 
 	consecutiveAnomaly int
 
-	triggerActive bool
-	triggerUntil  time.Time
-	cooldownUntil time.Time
-	triggerCount  uint64
-	lastTriggerAt time.Time
+	triggerActive         bool
+	triggerUntil          time.Time
+	cooldownUntil         time.Time
+	triggerCount          uint64
+	lastTriggerAt         time.Time
+	triggerPeakGoroutines int
+	triggerPeakDelta      int
 
 	prevMutexFraction int
 
@@ -286,6 +375,7 @@ func newNoTouchProbe(cfg NoTouchConfig) *noTouchProbe {
 		cancel:            cancel,
 		done:              make(chan struct{}),
 		samples:           make([]NoTouchSample, cfg.HistorySize),
+		incidents:         make([]NoTouchIncident, defaultNoTouchIncidentLimit),
 		prevMutexFraction: -1,
 	}
 }
@@ -337,6 +427,16 @@ func (p *noTouchProbe) tick(now time.Time) {
 	}
 	p.currentGoroutines = g
 	p.currentDelta = delta
+
+	if p.triggerActive {
+		if g > p.triggerPeakGoroutines {
+			p.triggerPeakGoroutines = g
+		}
+		if delta > p.triggerPeakDelta {
+			p.triggerPeakDelta = delta
+		}
+	}
+
 	p.appendSampleLocked(NoTouchSample{
 		Timestamp:    now.UnixNano(),
 		Goroutines:   g,
@@ -379,6 +479,8 @@ func (p *noTouchProbe) startTriggerLocked(now time.Time) {
 	p.lastTriggerAt = now
 	p.triggerUntil = now.Add(p.cfg.TriggerWindow)
 	p.consecutiveAnomaly = 0
+	p.triggerPeakGoroutines = p.currentGoroutines
+	p.triggerPeakDelta = p.currentDelta
 
 	p.prevMutexFraction = runtime.SetMutexProfileFraction(-1)
 	runtime.SetMutexProfileFraction(p.cfg.MutexProfileFraction)
@@ -386,8 +488,24 @@ func (p *noTouchProbe) startTriggerLocked(now time.Time) {
 }
 
 func (p *noTouchProbe) stopTriggerLocked(now time.Time) {
-	p.lastBlockProfile = profileSummary("block", p.cfg.ProfileMaxBytes, p.cfg.ProfileSummaryLines)
-	p.lastMutexProfile = profileSummary("mutex", p.cfg.ProfileMaxBytes, p.cfg.ProfileSummaryLines)
+	blockProfile := profileSummary("block", p.cfg.ProfileMaxBytes, p.cfg.ProfileSummaryLines)
+	mutexProfile := profileSummary("mutex", p.cfg.ProfileMaxBytes, p.cfg.ProfileSummaryLines)
+	hotspots := summarizeGoroutineProfile(goroutineProfile())
+	markPersistentHotspots(hotspots, p.latestIncidentHotspotsLocked())
+
+	incident := NoTouchIncident{
+		TriggeredAt:    p.lastTriggerAt.UnixNano(),
+		ResolvedAt:     now.UnixNano(),
+		PeakGoroutines: p.triggerPeakGoroutines,
+		PeakDelta:      p.triggerPeakDelta,
+		BlockProfile:   blockProfile,
+		MutexProfile:   mutexProfile,
+		Hotspots:       hotspots,
+	}
+	p.appendIncidentLocked(incident)
+
+	p.lastBlockProfile = blockProfile
+	p.lastMutexProfile = mutexProfile
 	p.lastBlockProfileAt = now.UnixNano()
 	p.lastMutexProfileAt = now.UnixNano()
 
@@ -402,6 +520,8 @@ func (p *noTouchProbe) stopTriggerLocked(now time.Time) {
 	p.triggerUntil = time.Time{}
 	p.cooldownUntil = now.Add(p.cfg.Cooldown)
 	p.consecutiveAnomaly = 0
+	p.triggerPeakGoroutines = 0
+	p.triggerPeakDelta = 0
 }
 
 func (p *noTouchProbe) appendSampleLocked(s NoTouchSample) {
@@ -416,6 +536,41 @@ func (p *noTouchProbe) appendSampleLocked(s NoTouchSample) {
 	}
 	p.samples[p.sampleHead] = s
 	p.sampleHead = (p.sampleHead + 1) % len(p.samples)
+}
+
+func (p *noTouchProbe) appendIncidentLocked(incident NoTouchIncident) {
+	if len(p.incidents) == 0 {
+		return
+	}
+	incident = cloneIncident(incident)
+	if p.incidentCount < len(p.incidents) {
+		idx := (p.incidentHead + p.incidentCount) % len(p.incidents)
+		p.incidents[idx] = incident
+		p.incidentCount++
+		return
+	}
+	p.incidents[p.incidentHead] = incident
+	p.incidentHead = (p.incidentHead + 1) % len(p.incidents)
+}
+
+func (p *noTouchProbe) latestIncidentHotspotsLocked() []NoTouchHotspot {
+	if p.incidentCount == 0 {
+		return nil
+	}
+	idx := (p.incidentHead + p.incidentCount - 1) % len(p.incidents)
+	return p.incidents[idx].Hotspots
+}
+
+func (p *noTouchProbe) copyRecentIncidentsLocked() []NoTouchIncident {
+	if p.incidentCount == 0 {
+		return nil
+	}
+	out := make([]NoTouchIncident, p.incidentCount)
+	for i := range p.incidentCount {
+		idx := (p.incidentHead + i) % len(p.incidents)
+		out[i] = cloneIncident(p.incidents[idx])
+	}
+	return out
 }
 
 func (p *noTouchProbe) report() NoTouchSnapshot {
@@ -451,6 +606,7 @@ func (p *noTouchProbe) report() NoTouchSnapshot {
 		LastBlockProfileAt:   p.lastBlockProfileAt,
 		LastMutexProfile:     p.lastMutexProfile,
 		LastMutexProfileAt:   p.lastMutexProfileAt,
+		RecentIncidents:      p.copyRecentIncidentsLocked(),
 	}
 
 	if p.sampleCount > 0 {
@@ -462,6 +618,160 @@ func (p *noTouchProbe) report() NoTouchSnapshot {
 	}
 
 	return out
+}
+
+func (p *noTouchProbe) compactReport() NoTouchCompactReport {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	mode := "passive"
+	if !p.baselineReady {
+		mode = "warming-up"
+	}
+	if p.triggerActive {
+		mode = "triggered"
+	}
+
+	return NoTouchCompactReport{
+		Enabled:           true,
+		Mode:              mode,
+		Timestamp:         time.Now().UnixNano(),
+		Baseline:          p.baseline,
+		CurrentGoroutines: p.currentGoroutines,
+		CurrentDelta:      p.currentDelta,
+		TriggerActive:     p.triggerActive,
+		TriggerCount:      p.triggerCount,
+		LastTriggerAt:     p.lastTriggerAt.UnixNano(),
+		RecentIncidents:   p.copyRecentIncidentsLocked(),
+	}
+}
+
+func cloneIncident(incident NoTouchIncident) NoTouchIncident {
+	if len(incident.Hotspots) > 0 {
+		incident.Hotspots = append([]NoTouchHotspot(nil), incident.Hotspots...)
+	}
+	return incident
+}
+
+func summarizeGoroutineProfile(raw string) []NoTouchHotspot {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+
+	type hotspotKey struct {
+		state    string
+		topFrame string
+	}
+
+	counts := make(map[hotspotKey]int)
+	for _, block := range strings.Split(raw, "\n\n") {
+		lines := strings.Split(strings.TrimSpace(block), "\n")
+		if len(lines) == 0 || !strings.HasPrefix(lines[0], "goroutine ") {
+			continue
+		}
+		state := goroutineState(lines[0])
+		topFrame := topNonRuntimeFrame(lines[1:])
+		key := hotspotKey{state: state, topFrame: topFrame}
+		counts[key]++
+	}
+
+	if len(counts) == 0 {
+		return nil
+	}
+
+	hotspots := make([]NoTouchHotspot, 0, len(counts))
+	for key, count := range counts {
+		hotspots = append(hotspots, NoTouchHotspot{
+			State:    key.state,
+			TopFrame: key.topFrame,
+			Count:    count,
+		})
+	}
+	sort.Slice(hotspots, func(i, j int) bool {
+		if hotspots[i].Count != hotspots[j].Count {
+			return hotspots[i].Count > hotspots[j].Count
+		}
+		if hotspots[i].State != hotspots[j].State {
+			return hotspots[i].State < hotspots[j].State
+		}
+		return hotspots[i].TopFrame < hotspots[j].TopFrame
+	})
+	return hotspots
+}
+
+func goroutineState(header string) string {
+	start := strings.IndexByte(header, '[')
+	if start < 0 {
+		return "unknown"
+	}
+	rest := header[start+1:]
+	end := strings.IndexByte(rest, ']')
+	if end < 0 {
+		return "unknown"
+	}
+	state := rest[:end]
+	if comma := strings.IndexByte(state, ','); comma >= 0 {
+		state = state[:comma]
+	}
+	state = strings.TrimSpace(state)
+	if state == "" {
+		return "unknown"
+	}
+	return state
+}
+
+func topNonRuntimeFrame(lines []string) string {
+	firstFrame := ""
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "created by ") {
+			continue
+		}
+		if line[0] == '\t' || line[0] == ' ' {
+			continue
+		}
+		if firstFrame == "" {
+			firstFrame = trimmed
+		}
+		if strings.HasPrefix(trimmed, "runtime.") || strings.HasPrefix(trimmed, "runtime/") || strings.HasPrefix(trimmed, "internal/runtime/") {
+			continue
+		}
+		return trimmed
+	}
+	if firstFrame != "" {
+		return firstFrame
+	}
+	return "unknown"
+}
+
+func markPersistentHotspots(current, previous []NoTouchHotspot) {
+	if len(current) == 0 || len(previous) == 0 {
+		return
+	}
+	prevCounts := make(map[string]int, len(previous))
+	for _, hotspot := range previous {
+		prevCounts[hotspot.State+"\x00"+hotspot.TopFrame] = hotspot.Count
+	}
+	for i := range current {
+		key := current[i].State + "\x00" + current[i].TopFrame
+		prevCount, ok := prevCounts[key]
+		if ok && current[i].Count >= prevCount {
+			current[i].Persistent = true
+		}
+	}
+}
+
+func goroutineProfile() string {
+	prof := pprof.Lookup("goroutine")
+	if prof == nil {
+		return ""
+	}
+	var b bytes.Buffer
+	if err := prof.WriteTo(&b, 2); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(b.String())
 }
 
 // NoTouchReport returns the current no-touch runtime probing snapshot.
@@ -477,6 +787,21 @@ func NoTouchReport() NoTouchSnapshot {
 		}
 	}
 	return p.report()
+}
+
+// NoTouchDashboardReport returns a compact incident-focused report for dashboards and tooling.
+func NoTouchDashboardReport() NoTouchCompactReport {
+	noTouchMu.RLock()
+	p := defaultNoTouch
+	noTouchMu.RUnlock()
+	if p == nil {
+		return NoTouchCompactReport{
+			Enabled:   false,
+			Mode:      "disabled",
+			Timestamp: time.Now().UnixNano(),
+		}
+	}
+	return p.compactReport()
 }
 
 func startNoTouchLocked(cfg NoTouchConfig) {
