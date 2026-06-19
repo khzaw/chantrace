@@ -330,6 +330,12 @@ type noTouchProbe struct {
 	cancel context.CancelFunc
 	done   chan struct{}
 
+	// numGoroutines returns the live goroutine count. It defaults to
+	// runtime.NumGoroutine and is overridable by tests so the trigger state
+	// machine can be driven deterministically without depending on scheduler
+	// timing. Read under mu.
+	numGoroutines func() int
+
 	mu sync.Mutex
 
 	samples     []NoTouchSample
@@ -377,6 +383,7 @@ func newNoTouchProbe(cfg NoTouchConfig) *noTouchProbe {
 		samples:           make([]NoTouchSample, cfg.HistorySize),
 		incidents:         make([]NoTouchIncident, defaultNoTouchIncidentLimit),
 		prevMutexFraction: -1,
+		numGoroutines:     runtime.NumGoroutine,
 	}
 }
 
@@ -407,7 +414,7 @@ func (p *noTouchProbe) run() {
 }
 
 func (p *noTouchProbe) tick(now time.Time) {
-	g := runtime.NumGoroutine()
+	g := p.numGoroutines()
 
 	p.mu.Lock()
 	defer p.mu.Unlock()

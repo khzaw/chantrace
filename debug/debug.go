@@ -6,25 +6,20 @@
 //
 // This registers the following endpoints:
 //
-//	GET /debug/chantrace/          — index page
-//	GET /debug/chantrace/events    — recent traced events (JSON)
-//	GET /debug/chantrace/channels  — registered channels (JSON)
-//	GET /debug/chantrace/notouch   — full no-touch probe snapshot (JSON)
-//	GET /debug/chantrace/report    — compact no-touch incident report (JSON)
+//	GET /debug/chantrace/         — index page (live polling dashboard)
+//	GET /debug/chantrace/notouch  — full no-touch probe snapshot (JSON)
+//	GET /debug/chantrace/report   — compact no-touch incident report (JSON)
 package debug
 
 import (
 	"encoding/json"
 	"net/http"
-	"strconv"
 
 	"github.com/khzaw/chantrace"
 )
 
 func init() {
 	http.HandleFunc("GET /debug/chantrace/", handleIndex)
-	http.HandleFunc("GET /debug/chantrace/events", handleEvents)
-	http.HandleFunc("GET /debug/chantrace/channels", handleChannels)
 	http.HandleFunc("GET /debug/chantrace/notouch", handleNoTouch)
 	http.HandleFunc("GET /debug/chantrace/report", handleReport)
 }
@@ -147,8 +142,6 @@ a {
       <div class="links">
         <a href="/debug/chantrace/report">/debug/chantrace/report</a>
         <a href="/debug/chantrace/notouch">/debug/chantrace/notouch</a>
-        <a href="/debug/chantrace/events?n=100">/debug/chantrace/events?n=100</a>
-        <a href="/debug/chantrace/channels">/debug/chantrace/channels</a>
       </div>
     </div>
     <div id="probe-status" class="status" data-enabled="false" data-trigger="false">disabled</div>
@@ -266,34 +259,6 @@ startDashboardPolling();
 </script>
 </body>
 </html>`))
-}
-
-func handleEvents(w http.ResponseWriter, r *http.Request) {
-	n := 100
-	if s := r.URL.Query().Get("n"); s != "" {
-		if v, err := strconv.Atoi(s); err == nil && v > 0 {
-			n = v
-		}
-	}
-	events := chantrace.Snapshot(n)
-	data, err := json.Marshal(events)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	w.Header().Set("Content-Type", "application/json")
-	_, _ = w.Write(data)
-}
-
-func handleChannels(w http.ResponseWriter, _ *http.Request) {
-	channels := chantrace.Channels()
-	data, err := json.Marshal(channels)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	w.Header().Set("Content-Type", "application/json")
-	_, _ = w.Write(data)
 }
 
 func handleNoTouch(w http.ResponseWriter, _ *http.Request) {
