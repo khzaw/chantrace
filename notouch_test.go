@@ -94,7 +94,7 @@ func TestNoTouchLifecycle(t *testing.T) {
 		t.Fatalf("Mode = %q, expected active mode", r.Mode)
 	}
 
-	Enable(WithLogStream())
+	Enable()
 	r = waitForNoTouch(t, time.Second, func(r NoTouchSnapshot) bool {
 		return !r.Enabled
 	})

@@ -1,130 +1,57 @@
 package chantrace
 
 import (
-	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 )
 
-var (
-	enabled        atomic.Bool
-	snapshotValues atomic.Bool
-	pcCapture      atomic.Bool
-	pcSampleEvery  atomic.Uint32
-	pcSampleSeq    atomic.Uint64
-	shutdownMu     sync.Mutex
-)
+// enabled records whether the no-touch probe (if configured) is currently
+// running. It is read by Enabled and written under shutdownMu by Enable and
+// Shutdown.
+var enabled atomic.Bool
+
+// shutdownMu serializes Enable/Shutdown so that start/stop of the probe
+// cannot race with itself.
+var shutdownMu sync.Mutex
+
+// pcCapture / pcSampleEvery / snapshotValues existed for the removed wrapper
+// API. They are intentionally gone: the only flagship is the no-touch runtime
+// probe, which does not capture program counters or channel value snapshots.
 
 func init() {
-	pcCapture.Store(true)
-	pcSampleEvery.Store(1)
-	if mode := os.Getenv("CHANTRACE"); mode != "" {
-		autoEnable(mode)
-	}
+	autoEnable(strings.ToLower(strings.TrimSpace(os.Getenv("CHANTRACE"))))
 }
 
-func autoEnable(mode string) {
-	switch mode {
-	case "tui":
-		Enable(WithTUI())
-	case "web":
-		Enable(WithWeb(""))
+// autoEnable wires the CHANTRACE environment variable to a no-op unless it is
+// explicitly "notouch". Any other value (including the empty string) leaves the
+// probe disabled; users must call Enable(WithNoTouch(...)) themselves.
+func autoEnable(v string) {
+	switch v {
 	case "notouch":
 		Enable(WithNoTouch())
 	default:
-		Enable(WithLogStream())
+		// Unrecognized or unset: leave it to the caller.
 	}
 }
 
-// Option configures the tracer.
+// traceConfig is the resolved configuration consumed by Enable. Only the
+// no-touch probe remains; the backend/collector/PC fields are gone.
+type traceConfig struct {
+	noTouch *NoTouchConfig
+}
+
+// Option configures the tracing session.
 type Option func(*traceConfig)
 
-type traceConfig struct {
-	backends      []Backend
-	bufSize       int
-	snapValues    *bool
-	pcCapture     *bool
-	pcSampleEvery *uint32
-	noTouch       *NoTouchConfig
-}
-
-// WithLogStream enables colored log output to stderr.
-func WithLogStream() Option {
-	return func(c *traceConfig) {
-		c.backends = append(c.backends, newLogStream())
-	}
-}
-
-// WithTUI enables the terminal UI dashboard.
-// Import github.com/khzaw/chantrace/backend/tui for full TUI support.
-// Falls back to logstream if TUI package is not imported.
-func WithTUI() Option {
-	return func(c *traceConfig) {
-		if f, ok := backendFactories.Load("tui"); ok {
-			c.backends = append(c.backends, f.(func() Backend)())
-		} else {
-			c.backends = append(c.backends, newLogStream())
-		}
-	}
-}
-
-// WithWeb enables the web UI dashboard on the given address (e.g. ":4884").
-// Import github.com/khzaw/chantrace/backend/web for full web support.
-// Falls back to logstream if web package is not imported.
-func WithWeb(addr string) Option {
-	return func(c *traceConfig) {
-		if f, ok := backendFactories.Load("web"); ok {
-			factory := f.(func(string) Backend)
-			c.backends = append(c.backends, factory(addr))
-		} else {
-			c.backends = append(c.backends, newLogStream())
-		}
-	}
-}
-
-// WithBackend adds a custom backend.
-func WithBackend(b Backend) Option {
-	return func(c *traceConfig) {
-		c.backends = append(c.backends, b)
-	}
-}
-
-// WithBufferSize sets the async dispatch buffer (default 16384).
-// Overflow drops from backend dispatch but stays in the ring for [Snapshot].
-func WithBufferSize(n int) Option {
-	return func(c *traceConfig) {
-		c.bufSize = n
-	}
-}
-
-// WithValueSnapshot controls whether values are captured via fmt.Sprintf.
-// Default is true. Disable to avoid reflection and String() overhead.
-func WithValueSnapshot(on bool) Option {
-	return func(c *traceConfig) {
-		c.snapValues = &on
-	}
-}
-
-// WithPCCapture controls whether program counters are captured.
-// Default is true. Disable to skip the ~100ns runtime.Callers cost per event.
-func WithPCCapture(on bool) Option {
-	return func(c *traceConfig) {
-		c.pcCapture = &on
-	}
-}
-
-// WithPCSampleEvery captures PCs for one out of every n traced operations.
-// Default is 1 (capture every operation). Values <= 1 disable sampling.
-func WithPCSampleEvery(n uint32) Option {
-	return func(c *traceConfig) {
-		c.pcSampleEvery = &n
-	}
-}
-
-// WithNoTouch enables low-perturbation runtime sampling with anomaly-triggered
-// block/mutex profiling windows. This mode does not require wrapping channel
-// operations and is intended for initial debugging passes.
+// WithNoTouch enables the no-touch runtime probe: low-perturbation goroutine-
+// count sampling with anomaly-triggered block/mutex profile capture windows.
+// It requires no instrumentation of channel operations and is the recommended
+// way to use chantrace.
+//
+// With no options the defaults from defaultNoTouchConfig are used; pass
+// WithNoTouch* tunables to adjust them.
 func WithNoTouch(opts ...NoTouchOption) Option {
 	return func(c *traceConfig) {
 		cfg := defaultNoTouchConfig()
@@ -136,73 +63,39 @@ func WithNoTouch(opts ...NoTouchOption) Option {
 	}
 }
 
-var backendFactories sync.Map // string → factory function
-
-// RegisterBackendFactory registers a named backend constructor, typically
-// called from a backend sub-package's init(). Accepts func() Backend
-// or func(string) Backend.
-func RegisterBackendFactory(name string, factory any) {
-	switch factory.(type) {
-	case func() Backend, func(string) Backend:
-		backendFactories.Store(name, factory)
-	default:
-		panic(fmt.Sprintf("chantrace.RegisterBackendFactory: unsupported factory type %T", factory))
-	}
-}
-
-// Enable starts tracing. Calling again replaces backends.
-// Defaults to [WithLogStream] if no backends are specified.
+// Enable starts a tracing session. With no options the session is inert; pass
+// WithNoTouch (and its WithNoTouch* tunables) to activate the runtime probe.
+//
+// Calling Enable again (with or without WithNoTouch) first stops any probe that
+// is currently running, so re-enabling without WithNoTouch disables the probe.
+//
+// CHANTRACE=notouch in the environment enables the probe with defaults without
+// any code change.
 func Enable(opts ...Option) {
+	cfg := traceConfig{}
+	for _, opt := range opts {
+		opt(&cfg)
+	}
+
 	shutdownMu.Lock()
 	defer shutdownMu.Unlock()
 
-	cfg := &traceConfig{}
-	for _, opt := range opts {
-		opt(cfg)
-	}
 	stopNoTouchLocked()
 
-	if len(cfg.backends) == 0 && cfg.noTouch == nil {
-		cfg.backends = append(cfg.backends, newLogStream())
-	}
-	if cfg.bufSize > 0 {
-		defaultCollector.bufSize = cfg.bufSize
-	}
-	if cfg.snapValues != nil {
-		snapshotValues.Store(*cfg.snapValues)
-	} else {
-		snapshotValues.Store(true)
-	}
-	if cfg.pcCapture != nil {
-		pcCapture.Store(*cfg.pcCapture)
-	} else {
-		pcCapture.Store(true)
-	}
-	if cfg.pcSampleEvery != nil && *cfg.pcSampleEvery > 1 {
-		pcSampleEvery.Store(*cfg.pcSampleEvery)
-	} else {
-		pcSampleEvery.Store(1)
-	}
-	pcSampleSeq.Store(0)
-	defaultCollector.replaceBackends(cfg.backends)
-	defaultCollector.start()
-	enabled.Store(true)
 	if cfg.noTouch != nil {
 		startNoTouchLocked(*cfg.noTouch)
 	}
+	enabled.Store(cfg.noTouch != nil)
 }
 
-// Shutdown stops tracing and flushes all backends.
+// Shutdown stops any active probe and restores runtime profile rates the probe
+// may have changed. It is safe to call multiple times.
 func Shutdown() {
 	shutdownMu.Lock()
 	defer shutdownMu.Unlock()
-
-	enabled.Store(false)
 	stopNoTouchLocked()
-	defaultCollector.closeBackends()
+	enabled.Store(false)
 }
 
-// Enabled reports whether tracing is currently active.
-func Enabled() bool {
-	return enabled.Load()
-}
+// Enabled reports whether the no-touch probe is currently running.
+func Enabled() bool { return enabled.Load() }
