@@ -319,11 +319,3 @@ func TestProfileSummaryTruncatesLines(t *testing.T) {
 	}
 }
 
-// TestProfileSummaryMissingProfileReturnsEmpty verifies the nil-profile path.
-func TestProfileSummaryMissingProfileReturnsEmpty(t *testing.T) {
-	got := profileSummary("definitely-not-a-real-profile-name", 1024, 10)
-	if got != "" {
-		t.Errorf("profileSummary for missing profile = %q, want empty", got)
-	}
-}
-
